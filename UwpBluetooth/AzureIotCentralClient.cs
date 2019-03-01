@@ -28,9 +28,9 @@ namespace UwpBluetooth
     // IoT Hub Device client
     static DeviceClient _deviceClient;
     // device id
-    public const string CentralDeviceId = "e4044af3-a63d-474b-adda-0bb6e07a5295";
+    public const string CentralDeviceId = "<CentralDeviceId>";
     // connectionStatus string
-    public const string CentralConnectionString = "HostName=saas-iothub-d715ec72-7163-44d6-b70a-fd3306646130.azure-devices.net;DeviceId=e4044af3-a63d-474b-adda-0bb6e07a5295;SharedAccessKey=MuYYWZRAGuP6OhGqjRMp/evfk4tD6ILSg7GopKGM7lU=";
+    public const string CentralConnectionString = "<CentralConnectionString>";
     #endregion
 
     #region connect to iot central
