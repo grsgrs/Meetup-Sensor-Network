@@ -1,0 +1,452 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Globalization;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices.WindowsRuntime;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Input;
+using Windows.ApplicationModel;
+using Windows.ApplicationModel.Core;
+using Windows.Devices.Bluetooth.Advertisement;
+using Windows.Foundation.Diagnostics;
+using Windows.Storage;
+using Windows.UI;
+using Windows.UI.Core;
+using Windows.UI.Xaml.Media;
+
+namespace UwpBluetooth
+{
+  #region MainPageViewModel
+  public class MainPageViewModel : Observable
+  {
+    private string _alarmMessage = "I feel good";
+
+    private BluetoothLEAdvertisementWatcher Watcher { get; set; }
+    public ObservableCollection<Beacon> Beacons { get; set; }
+    public ObservableCollection<LogMessage> LogMessages { get; set; } = new ObservableCollection<LogMessage>();
+    public ObservableCollection<LogMessage> LogAzureMessages { get; set; } = new ObservableCollection<LogMessage>();
+
+    public ICommand SendAlarmCommand { get; set; }
+    public ICommand ExitButtonCommand { get; set; }
+
+    public Windows.UI.Xaml.Visibility ExitButtonVisibility { get; set; }
+    
+
+    public string AlarmMessage
+    {
+      get => _alarmMessage;
+      set
+      {
+        _alarmMessage = value;
+        OnPropertyChanged();
+      }
+    }
+
+ 
+
+    #region Constructor
+    public MainPageViewModel()
+    {
+      Package package = Package.Current;
+      ExitButtonVisibility = package.Id.Architecture == Windows.System.ProcessorArchitecture.Arm ? Windows.UI.Xaml.Visibility.Visible : Windows.UI.Xaml.Visibility.Collapsed;
+
+      SendAlarmCommand = new DelegateCommand(SendAlarmCommandExecute);
+      ExitButtonCommand = new DelegateCommand(ExitCommandExecute);
+      AzureIotCentralClient.SensorChanged += OnSensorChanged;
+      AzureIotCentralClient.ShowEventMessage += ShowEventMessage;
+      AzureIotCentralClient.ShowTelemetryMessage += ShowTelemetryMessage;
+
+      Beacons = new ObservableCollection<Beacon>
+      {
+        new Beacon{
+          Name ="Ice blue Beacon",
+          BluetoothAddress = 0xE832C0E3AA0F, BeaconType = BeaconType.EddystoneTlm,
+          SensorDatas = new ObservableCollection<SensorData>
+          {
+            new SensorData{SensorType = SensorType.BatteryMv, Name="Battery level in mV"},
+            new SensorData{SensorType = SensorType.Temperature, Name="Temperature in ℃"},
+          }},
+        new Beacon{
+          Name ="Blukii",
+          BluetoothAddress = 0x2471894DAF5A, BeaconType = BeaconType.Blukii,
+          SensorDatas = new ObservableCollection<SensorData>
+          {
+            new SensorData{SensorType = SensorType.BatteryPercent, Name="Battery level in %"},
+            new SensorData{SensorType = SensorType.Temperature, Name="Temperature in ℃"},
+            new SensorData{SensorType = SensorType.Humidity, Name="Humidity in %"},
+            new SensorData{SensorType = SensorType.Luminosity, Name="Luminosity in lux"},
+            new SensorData{SensorType = SensorType.Pressure, Name="Pressure in dPa"},
+          }},
+        new Beacon{Name="ABeacon Black", BluetoothAddress = 259822570646509, Enabled = false },
+
+      };
+    }
+
+    private void ExitCommandExecute(object obj)
+    {
+      CoreApplication.Exit();
+    }
+    #endregion
+
+    #region sensor message from azure iot central 
+    private async Task OnSensorChanged(string bluetoothAddressAsString, string sensorAsString, string actionAsString)
+    {
+      String errors = "";
+      ActionParameter actionParameter = Helper.DecodeSensorCommandAction(Beacons, bluetoothAddressAsString, sensorAsString,
+        actionAsString, out errors);
+      if (actionParameter == null)
+      {
+        await AzureIotCentralClient.SendMessageFromDeviceToCloud("alarm", errors).ConfigureAwait(false);
+      }
+      else
+      {
+        actionParameter.SensorData.PerformAction(actionParameter.CommandAction);
+      }
+    }
+    #endregion
+
+    #region exceute demo alarm
+    private async void SendAlarmCommandExecute(object obj)
+    {
+      await AzureIotCentralClient.SendMessageFromDeviceToCloud("alarm", AlarmMessage).ConfigureAwait(false);
+    }
+    #endregion
+
+    #region StartWatching
+    public void StartWatching()
+    {
+      AzureIotCentralClient.ConnectToIoTHub();
+
+      Watcher = new BluetoothLEAdvertisementWatcher
+      {
+        ScanningMode = BluetoothLEScanningMode.Active
+      };
+      Watcher.Received += WatcherOnReceived;
+
+      Watcher.Start();
+    }
+    #endregion
+
+    public async Task WriteEvent (String message)
+    {
+      FileLoggingSession fileLoggingSession = new FileLoggingSession("session");
+      var loggingChannel = new LoggingChannel("channel");
+      fileLoggingSession.AddLoggingChannel(loggingChannel);
+
+      // Log messages
+      loggingChannel.LogMessage("error message", LoggingLevel.Error);
+
+      // When file is needed
+      StorageFile file = await fileLoggingSession.CloseAndSaveToFileAsync();
+
+    }
+
+    #region Receive ardvertising frames
+    private async void WatcherOnReceived(BluetoothLEAdvertisementWatcher sender, BluetoothLEAdvertisementReceivedEventArgs args)
+    {
+      var beacon = Beacons.FirstOrDefault(d => d.BluetoothAddress == args.BluetoothAddress);
+      if (beacon == null)
+      {
+        return;
+      }
+      Debug.WriteLine($"Name {beacon.Name} BLE address {args.BluetoothAddress:X}");
+      var manufacturerDatas = args.Advertisement.ManufacturerData;
+      if (manufacturerDatas != null)
+      {
+        foreach (var data in manufacturerDatas)
+        {
+          Debug.WriteLine($"ManufacturerData ID {data.CompanyId} name {BluetoothCompanies.Instance.GetCompanyName(data.CompanyId)} {Helper.ToHexString(data.Data.ToArray())}");
+        }
+      }
+      var dataSections = args.Advertisement.DataSections;
+      if (dataSections != null)
+      {
+        foreach (var data in dataSections)
+        {
+          byte[] payload = data.Data.ToArray();
+          Debug.WriteLine($"DataFrame Type 0x{data.DataType:X}  {Helper.ToHexString(data.Data.ToArray())}");
+          if (beacon.BeaconType == BeaconType.EddystoneTlm)
+          {
+            if (data.DataType == 0x16 && payload[0] == 0xAA && payload[1] == 0xFE && payload[2] == 0x20)
+            {
+              int batteryLevel = Helper.ToUint16(payload, 4);
+              if (batteryLevel == 0)
+              {
+                int x = 44;
+              }
+              beacon.SetData(SensorType.BatteryMv, Helper.ToUint16(payload, 4));
+              beacon.SetData(SensorType.Temperature, Helper.GetEddystoneTemperature(payload, 6));
+              ThreadHelper.RunOnMainThread(() =>
+              {
+                beacon.TimeStampReceived = args.Timestamp.DateTime;
+                beacon.UpdateUi();
+              });
+
+              await AzureIotCentralClient.SendSensorDataToIotCentral(beacon, args.Timestamp.DateTime).ConfigureAwait(false);
+            }
+          }
+
+          if (beacon.BeaconType == BeaconType.Blukii)
+          {
+            if (data.DataType == 0xFF && payload.Length >= 22 && payload[14] == 0x10)
+            {
+              beacon.SetData(SensorType.BatteryPercent, (int)payload[12]);
+              beacon.SetData(SensorType.Temperature, Helper.GetBluekiiTemperature(payload, 20));
+              beacon.SetData(SensorType.Humidity, (int)payload[19]);
+              beacon.SetData(SensorType.Luminosity, Helper.ToUint16(payload, 17));
+              beacon.SetData(SensorType.Pressure, Helper.ToUint16(payload, 15));
+              ThreadHelper.RunOnMainThread(() =>
+              {
+                beacon.TimeStampReceived = args.Timestamp.DateTime;
+                beacon.UpdateUi();
+              });
+              await AzureIotCentralClient.SendSensorDataToIotCentral(beacon, args.Timestamp.DateTime).ConfigureAwait(false);
+            }
+          }
+
+
+        }
+
+        var serviceUuids = args.Advertisement.ServiceUuids;
+        if (serviceUuids != null)
+        {
+          foreach (var uuid in serviceUuids)
+          {
+            Debug.WriteLine($"ServiceUuid {uuid}");
+          }
+        }
+
+        Debug.WriteLine($"");
+      }
+
+    }
+    #endregion
+
+    public void ShowTelemetryMessage(string message)
+    {
+      ThreadHelper.RunOnMainThread(() =>
+      {
+        LogMessages.Insert(0, new LogMessage
+        {
+          MessageText = message,
+          Time = DateTime.Now.ToString("HH:mm:ss")
+        });
+      });
+
+      Debug.WriteLine(message);
+
+    }
+    public void ShowEventMessage(string message)
+    {
+      ThreadHelper.RunOnMainThread(() =>
+      {
+        LogAzureMessages.Insert(0, new LogMessage
+        {
+          MessageText = message,
+          Time = DateTime.Now.ToString("HH:mm:ss")
+        });
+      });
+
+      Debug.WriteLine(message);
+
+    }
+  }
+  #endregion
+
+  #region Beacon
+  public class Beacon : Observable
+  {
+    #region declaration class variables
+    private bool _enabled = true;
+    private Brush _brushEnabledDisabled = new SolidColorBrush(Colors.LightSeaGreen);
+
+    private DateTime _timeStampReceived;
+    public string Name { get; set; }
+    public BeaconType BeaconType { get; set; } = BeaconType.Unknown;
+    public ulong BluetoothAddress { get; set; }
+    public ObservableCollection<SensorData> SensorDatas { get; set; }
+
+    public Brush BrushEnabled { get; set; } = new SolidColorBrush(Colors.LightSeaGreen);
+    public Brush BrushDisabled { get; set; } = new SolidColorBrush(Colors.DarkGray);
+
+    public Brush BrushEnabledDisabled
+    {
+      get => _brushEnabledDisabled;
+      set
+      {
+        if (_brushEnabledDisabled != value)
+        {
+          _brushEnabledDisabled = value;
+          OnPropertyChanged();
+        }
+      }
+    }
+
+    public Boolean Enabled
+    {
+      get => _enabled;
+      set
+      {
+        if (_enabled != value)
+        {
+          _enabled = value;
+          BrushEnabledDisabled = _enabled == true ? BrushEnabled : BrushDisabled;
+          OnPropertyChanged();
+        }
+      }
+    }
+
+    public DateTime TimeStampReceived
+    {
+      get => _timeStampReceived;
+      set
+      {
+        _timeStampReceived = value;
+        OnPropertyChanged();
+      }
+    }
+    #endregion
+
+    public void SetData(SensorType sensorType, double value)
+    {
+      SensorData sensorData = SensorDatas.FirstOrDefault(s => s.SensorType == sensorType);
+      if (sensorData != null && sensorData.Enabled == true)
+      {
+        sensorData.ValueReceived = value;
+      }
+    }
+
+    public void UpdateUi()
+    {
+      foreach (var sensorData in SensorDatas)
+      {
+        sensorData.UpdateUi();
+      }
+    }
+
+  }
+  #endregion
+
+  #region ActionParameter
+  public class ActionParameter
+  {
+    public Beacon Beacon { get; set; }
+    public SensorData SensorData { get; set; }
+    public CommandAction CommandAction { get; set; } = CommandAction.None;
+  }
+  #endregion
+
+  #region enums
+  public enum CommandAction { None = -1, New = 0, Update = 1, Enable = 2, Disable = 3 }
+
+  public enum SensorType { None = -1, Temperature = 0, Humidity = 1, Pressure = 2, Luminosity = 3, BatteryMv = 4, BatteryPercent = 5 }
+
+  public enum BeaconType { Unknown, EddystoneTlm, Blukii }
+  #endregion
+
+  #region SensorData
+  public class SensorData : Observable
+  {
+    #region declaration class variables
+    private double _value = double.MinValue;
+    private bool _enabled = true;
+    private Brush _brushEnabledDisabled = new SolidColorBrush(Colors.LightSeaGreen);
+    public double ValueReceived { get; set; }
+    public SensorType SensorType { get; set; }
+    public String Name { get; set; }
+
+    public Brush BrushEnabled { get; set; } = new SolidColorBrush(Colors.LightSeaGreen);
+    public Brush BrushDisabled { get; set; } = new SolidColorBrush(Colors.DarkGray);
+
+    public Brush BrushEnabledDisabled
+    {
+      get => _brushEnabledDisabled;
+      set
+      {
+        if (_brushEnabledDisabled != value)
+        {
+          _brushEnabledDisabled = value;
+          OnPropertyChanged();
+        }
+      }
+    }
+
+    public Boolean Enabled
+    {
+      get => _enabled;
+      set
+      {
+        if (_enabled != value)
+        {
+          _enabled = value;
+          BrushEnabledDisabled = _enabled == true ? BrushEnabled : BrushDisabled;
+          if (_enabled == false)
+          {
+            ValueReceived = Value = double.MinValue;
+          }
+          OnPropertyChanged();
+        }
+      }
+    }
+
+
+    public double Value
+    {
+      get => _value;
+      set
+      {
+        if (Math.Abs(_value - value) > 0.01f)
+        {
+          _value = value;
+          OnPropertyChanged();
+        }
+      }
+    }
+    #endregion
+
+
+    public void UpdateUi()
+    {
+      Value = ValueReceived;
+    }
+
+    public void PerformAction(CommandAction action)
+    {
+      switch (action)
+      {
+        case CommandAction.Disable:
+          ThreadHelper.RunOnMainThread(() =>
+          {
+            Enabled = false;
+          });
+          break;
+        case CommandAction.Enable:
+          ThreadHelper.RunOnMainThread(() =>
+          {
+            Enabled = true;
+          });
+          break;
+        default:
+          break;
+      }
+    }
+  }
+  #endregion
+
+  #region LogMessage
+  public class LogMessage
+  {
+    public String Time { get; set; }
+    public String MessageText { get; set; }
+
+  }
+  #endregion
+
+
+
+}

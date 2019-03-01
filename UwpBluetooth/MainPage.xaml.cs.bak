@@ -1,0 +1,164 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices.WindowsRuntime;
+using System.Security.Cryptography;
+using Windows.Devices.Bluetooth.Advertisement;
+using Windows.Foundation;
+using Windows.Foundation.Collections;
+using Windows.Storage.Streams;
+using Windows.UI.WebUI;
+using Windows.UI.Xaml;
+using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Controls.Primitives;
+using Windows.UI.Xaml.Data;
+using Windows.UI.Xaml.Input;
+using Windows.UI.Xaml.Media;
+using Windows.UI.Xaml.Navigation;
+using System.ComponentModel;
+using System.Threading.Tasks;
+using Windows.UI.Core;
+using Windows.ApplicationModel;
+
+// Die Elementvorlage "Leere Seite" wird unter https://go.microsoft.com/fwlink/?LinkId=402352&clcid=0x407 dokumentiert.
+
+namespace UwpBluetooth
+{
+  /// <summary>
+  /// Eine leere Seite, die eigenständig verwendet oder zu der innerhalb eines Rahmens navigiert werden kann.
+  /// </summary>
+  public sealed partial class MainPage : Page
+  {
+    private MainPageViewModel MainPageViewModel { get; set; }
+    private BluetoothLEAdvertisementWatcher Watcher { get; set; }
+
+    public ulong IceBlueBeaconBleAddress { get; set; } = 0xE8_32_C0_E3_AA_0F; //255304682154511;
+    public ulong BlukiiBeaconBleAddress { get; set; } = 0x24_71_89_4D_AF_5A; //40070053474138;
+
+    private List<ulong> ActiveBeacons { get; set; } = new List<ulong>();
+
+    private GattExample GattExample { get; set; } = new GattExample();
+
+    public Boolean SignalStrengthOnly { get; set; } = false;
+    public Boolean ReceiceOnViewModel { get; set; } = false;
+    public Boolean ValueOnlyInDebug { get; set; } = true;
+
+    public MainPage()
+    {
+      ThreadHelper.Dispatcher = this.Dispatcher;
+      this.InitializeComponent();
+
+      ActiveBeacons.Add(IceBlueBeaconBleAddress);
+      ActiveBeacons.Add(BlukiiBeaconBleAddress);
+
+      DataContext = MainPageViewModel = new MainPageViewModel();
+
+      //Test();
+    }
+
+    private async Task GattServiceReceived()
+    {
+      for (int i = 0; i < 5; i++)
+      {
+        double lux = await GattExample.ReadLuminosityValue().ConfigureAwait(true);
+        double batteryLevel = await GattExample.ReadBatteryValue().ConfigureAwait(true);
+         Debug.WriteLine($"SensdorBug Lux {lux} lx battery level {batteryLevel} %");
+      }
+
+    }
+
+    private void Test()
+    {
+      String errors = "";
+      Helper.DecodeSensorCommandAction(MainPageViewModel.Beacons, "0x2471894DAF5A", "press", "dis", out errors);
+    }
+
+    private async void Page_Loaded(object sender, RoutedEventArgs e)
+    {
+      GattExample.ServiceReceived += GattServiceReceived;
+      GattExample.Start();
+      //if (ReceiceOnViewModel == true)
+      //{
+      //  MainPageViewModel.StartWatching();
+      //}
+      //else
+      //{
+      //  Watcher = new BluetoothLEAdvertisementWatcher
+      //  {
+      //    ScanningMode = BluetoothLEScanningMode.Active
+      //  };
+      //  Watcher.Received += WatcherOnReceived;
+      //  Watcher.Start();
+
+      //}
+
+    }
+
+    private void Log(string message)
+    {
+      if (ValueOnlyInDebug == false)
+      {
+        Debug.WriteLine(message);
+      }
+    }
+
+    private void LogValues(string message)
+    {
+      Debug.WriteLine(message);
+    }
+    private void WatcherOnReceived(BluetoothLEAdvertisementWatcher sender, BluetoothLEAdvertisementReceivedEventArgs args)
+    {
+      if (ActiveBeacons.Count(b => b == args.BluetoothAddress) == 0)
+      {
+        return;
+      }
+
+      Log($"BLE address {args.BluetoothAddress:X}");
+      var manufacturerDatas = args.Advertisement.ManufacturerData;
+      if (manufacturerDatas != null)
+      {
+        foreach (var manufacturerData in manufacturerDatas)
+        {
+          String companyName = BluetoothCompanies.Instance.GetCompanyName ( manufacturerData.CompanyId);
+          Log($"ManufacturerData ID {manufacturerData.CompanyId} name {companyName} {Helper.ToHexString(manufacturerData.Data.ToArray())}");
+        }
+      }
+      var dataSections = args.Advertisement.DataSections;
+      if (dataSections != null)
+      {
+        foreach (var data in dataSections)
+        {
+          byte[] payload = data.Data.ToArray();
+          Log($"DataFrame Type 0x{data.DataType:X}  {Helper.ToHexString(data.Data.ToArray())}");
+          if (args.BluetoothAddress == IceBlueBeaconBleAddress)
+          {
+            if (data.DataType == 0x16 && payload[0] == 0xAA && payload[1] == 0xFE && payload[2] == 0x20)
+            {
+              int batteryLevel = Helper.ToUint16(payload, 4);
+              double temperature = Helper.GetEddystoneTemperature(payload, 6);
+              Debug.WriteLine($"Received {args.Timestamp.DateTime} battery {batteryLevel} mV {temperature} ℃ Signal strength {args.RawSignalStrengthInDBm} dbm");
+            }
+          }
+        }
+      }
+
+      var serviceUuids = args.Advertisement.ServiceUuids;
+      if (serviceUuids != null)
+      {
+        foreach (var uuid in serviceUuids)
+        {
+          Log($"ServiceUuid {uuid}");
+        }
+      }
+
+      Log($"");
+    }
+
+  }
+
+}
